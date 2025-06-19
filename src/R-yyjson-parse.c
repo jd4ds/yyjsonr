@@ -37,12 +37,10 @@ parse_options create_parse_options(SEXP parse_opts_) {
     .num_specials          = NUM_SPECIALS_AS_SPECIAL,
     .promote_num_to_string = false,
     .yyjson_read_flag      = 0,
-    // ++ START: Initialize new options for issue #52
     .empty_array           = R_NilValue,
     .empty_array_set       = false,
     .empty_object          = R_NilValue,
     .empty_object_set      = false
-    // ++ END: Initialize new options for issue #52
   };
   
   // Sanity check and extract option names from the named list
@@ -93,14 +91,12 @@ parse_options create_parse_options(SEXP parse_opts_) {
       opt.num_specials = strcmp(val, "string") == 0 ? NUM_SPECIALS_AS_STRING : NUM_SPECIALS_AS_SPECIAL;
     } else if (strcmp(opt_name, "promote_num_to_string") == 0) {
       opt.promote_num_to_string = asLogical(val_);
-    // ++ START: Add handlers for new options for issue #52
     } else if (strcmp(opt_name, "empty_array") == 0) {
       opt.empty_array = val_;
       opt.empty_array_set = true;
     } else if (strcmp(opt_name, "empty_object") == 0) {
       opt.empty_object = val_;
       opt.empty_object_set = true;
-    // ++ END: Add handlers for new options for issue #52
     } else {
       warning("Unknown option ignored: '%s'\n", opt_name);
     }
@@ -1142,34 +1138,19 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
   
   size_t len = yyjson_get_len(arr);
   
-  // ++ START: Modified empty array handling for issue #52
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Empty []-array becomes an empty list or user-defined value
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (len == 0) {
     if (opt->empty_array_set) {
-      // User has provided a specific SEXP for empty arrays
       return opt->empty_array;
     } else {
-      // Default behaviour: empty []-array becomes an empty list
       res_ = PROTECT(allocVector(VECSXP, 0)); 
       UNPROTECT(1);
       return res_;
     }
   }
-  // ++ END: Modified empty array handling for issue #52
   
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Find what sort of containers exists within this array
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   unsigned int ctn_bitset = get_json_array_sub_container_types(arr, opt);
   
   if (ctn_bitset == CTN_NONE) {
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // There are no containers within the array.
-    // Process as an atomic vector or list.
-    // Use the 'type_bitset' of all the elements to determine best SEXP
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     unsigned int type_bitset = get_type_bitset_for_json_array(arr, 0, opt);
     unsigned int sexp_type = get_best_sexp_to_represent_type_bitset(type_bitset, opt);
     
@@ -1196,9 +1177,6 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
       error("json_array_as_robj(). Ooops\n");
     }
     
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // Tag a length-1 array as class = 'AsIs'
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     if (opt->length1_array_asis && length(res_) == 1 && !inherits(res_, "Integer64")) {
       setAttrib(res_, R_ClassSymbol, mkString("AsIs"));
     }
@@ -1210,14 +1188,6 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
     } else {
       res_ = PROTECT(json_array_as_vecsxp(arr, opt)); nprotect++;
       
-      // Check if compatible sub-matrices to make a 3d matrix
-      //  i.e. 
-      //    all members are matrices
-      //    all members have the same dimension
-      //    all matrices have the same type.
-      //      Note: in future could check for compatible type e.g. int/real
-      //      and promote all types to that for the final 3d matrix.
-      //      For now, just keeping it basic.  Mike 2023-08-12
       bool is_3d_matrix = true;
       int dim0 = 0;
       int dim1 = 0;
@@ -1227,14 +1197,12 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
       if (nlayer > 1) {
         for (unsigned int layer = 0; layer < nlayer; layer++) {
           
-          // check is matrix
           SEXP elem_ = VECTOR_ELT(res_, layer);
           if (!isMatrix(elem_)) {
             is_3d_matrix = false;
             break;
           }
           
-          // Check dims
           SEXP dims_ = getAttrib(elem_, R_DimSymbol);
           if (layer == 0) {
             dim0 = INTEGER(dims_)[0];
@@ -1246,7 +1214,6 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
             }
           }
           
-          // check type
           if (layer == 0) {
             sexp_type = (unsigned int)TYPEOF(elem_);
           } else {
@@ -1305,7 +1272,6 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
             warning("Warning: Unhandled 3d matrix type: %i (%s)\n", sexp_type, type2char(sexp_type));
           }
           
-          // Set dims on new 3d array.
           SEXP dims_ = PROTECT(allocVector(INTSXP, 3)); nprotect++;
           INTEGER(dims_)[0] = dim0;
           INTEGER(dims_)[1] = dim1;
@@ -1319,22 +1285,11 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
 
     }    
   } else if (ctn_bitset == CTN_OBJ && opt->arr_of_objs_to_df) {
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // []-array ONLY contains {}-objects!
-    // Parse as a data.frame
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     res_ = json_array_of_objects_to_data_frame(arr, opt);
   } else {
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    // This array contains a mixture of container types
-    // Parse as list
-    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     res_ = PROTECT(json_array_as_vecsxp(arr, opt)); nprotect++;
   }
   
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Tidy and return
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   UNPROTECT(nprotect);
   return res_;
 }
@@ -1653,13 +1608,10 @@ SEXP json_object_as_list(yyjson_val *obj, parse_options *opt) {
   }
   R_xlen_t n = (R_xlen_t)yyjson_get_len(obj);
   
-  // ++ START: Modified empty object handling for issue #52
   if (n == 0) {
     if (opt->empty_object_set) {
-      // User has provided a specific SEXP for empty objects
       return opt->empty_object;
     } else {
-      // Default behavior: empty {}-object becomes an empty named list
       SEXP res_ = PROTECT(allocVector(VECSXP, 0));
       SEXP nms_ = PROTECT(allocVector(STRSXP, 0));
       Rf_setAttrib(res_, R_NamesSymbol, nms_);
@@ -1667,7 +1619,6 @@ SEXP json_object_as_list(yyjson_val *obj, parse_options *opt) {
       return res_;
     }
   }
-  // ++ END: Modified empty object handling for issue #52
   
   SEXP res_ = PROTECT(allocVector(VECSXP, n)); nprotect++;
   SEXP nms_ = PROTECT(allocVector(STRSXP, n)); nprotect++;
