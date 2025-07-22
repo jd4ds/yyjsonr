@@ -1958,7 +1958,7 @@ SEXP parse_from_raw_(SEXP raw_, SEXP parse_opts_) {
   // rather than running over into dead space after the raw string ends
   opt.yyjson_read_flag |= YYJSON_READ_STOP_WHEN_DONE;
   
-  return parse_json_from_str(str, (size_t)Rf_length(raw_), &opt);
+  return parse_json_from_str(str, (size_t)length(raw_), &opt);
 }
 
 
