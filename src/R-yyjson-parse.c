@@ -1138,9 +1138,6 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
   
   size_t len = yyjson_get_len(arr);
   
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Empty []-array becomes an empty list or user-defined value
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (len == 0) {
     if (opt->empty_array_set) {
       return opt->empty_array;
