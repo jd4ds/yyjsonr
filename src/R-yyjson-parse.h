@@ -106,6 +106,10 @@ typedef struct {
   int digits_promote;
   SEXP single_null;
   unsigned int yyjson_read_flag;
+  SEXP empty_array;
+  bool empty_array_set;
+  SEXP empty_object;
+  bool empty_object_set;
 } parse_options;
 
 //===========================================================================

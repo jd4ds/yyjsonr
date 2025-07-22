@@ -1,12 +1,8 @@
-
-#define R_NO_REMAP
-
 #include <R.h>
 #include <Rinternals.h>
 #include <Rdefines.h>
 
 #include <stdio.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -40,9 +36,11 @@ parse_options create_parse_options(SEXP parse_opts_) {
     .str_specials          = STR_SPECIALS_AS_STRING,
     .num_specials          = NUM_SPECIALS_AS_SPECIAL,
     .promote_num_to_string = false,
-    .digits_promote        = 6,
-    .single_null           = R_NilValue,
-    .yyjson_read_flag      = 0
+    .yyjson_read_flag      = 0,
+    .empty_array           = R_NilValue,
+    .empty_array_set       = false,
+    .empty_object          = R_NilValue,
+    .empty_object_set      = false
   };
   
   // Sanity check and extract option names from the named list
@@ -93,13 +91,12 @@ parse_options create_parse_options(SEXP parse_opts_) {
       opt.num_specials = strcmp(val, "string") == 0 ? NUM_SPECIALS_AS_STRING : NUM_SPECIALS_AS_SPECIAL;
     } else if (strcmp(opt_name, "promote_num_to_string") == 0) {
       opt.promote_num_to_string = Rf_asLogical(val_);
-    } else if (strcmp(opt_name, "single_null") == 0) {
-      opt.single_null = val_;
-    } else if (strcmp(opt_name, "digits_promote") == 0) {
-      opt.digits_promote = Rf_asInteger(val_);
-      if (opt.digits_promote < 0 || opt.digits_promote > 30) {
-        Rf_error("'digits_promote' must be integer in range [0, 30]");
-      }
+    } else if (strcmp(opt_name, "empty_array") == 0) {
+      opt.empty_array = val_;
+      opt.empty_array_set = true;
+    } else if (strcmp(opt_name, "empty_object") == 0) {
+      opt.empty_object = val_;
+      opt.empty_object_set = true;
     } else {
       Rf_warning("Unknown option ignored: '%s'\n", opt_name);
     }
@@ -347,17 +344,8 @@ SEXP json_val_to_charsxp(yyjson_val *val, parse_options *opt) {
       return Rf_mkChar(buf);
       break;
     case YYJSON_SUBTYPE_REAL:
-    {
-      const char *fs[31] = {
-        "%.0f", "%.1f", "%.2f", "%.3f", "%.4f", "%.5f", "%.6f", "%.7f", 
-        "%.8f", "%.9f", "%.10f", "%.11f", "%.12f", "%.13f", "%.14f", 
-        "%.15f", "%.16f", "%.17f", "%.18f", "%.19f", "%.20f", "%.21f", 
-        "%.22f", "%.23f", "%.24f", "%.25f", "%.26f", "%.27f", "%.28f", 
-        "%.29f", "%.30f"
-      };
-      snprintf(buf, 128, fs[opt->digits_promote], yyjson_get_real(val));
+      snprintf(buf, 128, "%f", yyjson_get_real(val));
       return Rf_mkChar(buf);
-    }
       break;
     default:
       Rf_warning("json_val_to_charsxp unhandled numeric type %s\n", yyjson_get_type_desc(val));
@@ -369,9 +357,6 @@ SEXP json_val_to_charsxp(yyjson_val *val, parse_options *opt) {
     } else {  
       return Rf_mkChar(yyjson_get_str(val));
       }
-    break;
-  case YYJSON_TYPE_RAW:
-    return Rf_mkChar(yyjson_get_raw(val));
     break;
   default:
     // This shouldn't happen if the type checking done elsewhere is correct!
@@ -399,7 +384,7 @@ SEXP json_val_to_charsxp(yyjson_val *val, parse_options *opt) {
 // which JSON types have been seen.
 //
 // In simple cases only a single bit in the bitset will be turned on - 
-// which indicates that the []-array or {}-object only contains a single 
+// which indicates that the []-array of {}-object only contains a single 
 // type of value and is thus easily matched to an R vector.
 //
 // In more complex cases, the bitset has multiple bit sets indicating that
@@ -508,7 +493,7 @@ unsigned int get_best_sexp_to_represent_type_bitset(unsigned int type_bitset, pa
   } else if ((type_bitset & VAL_ARR) | (type_bitset & VAL_OBJ)) {
     sexp_type = VECSXP;
   } else if (type_bitset == 0) {
-    sexp_type = Rf_isNull(opt->single_null) ? VECSXP : (unsigned int)TYPEOF(opt->single_null);
+    sexp_type = VECSXP;
   } else {
     Rf_warning("get_best_sexp_to_represent_type_bitset(): unhandled type_bitset %i\n.", type_bitset);
     sexp_type = VECSXP;
@@ -591,9 +576,6 @@ unsigned int update_type_bitset(unsigned int type_bitset, yyjson_val *val, parse
     break;
   case YYJSON_TYPE_OBJ:
     type_bitset |= VAL_OBJ;
-    break;
-  case YYJSON_TYPE_RAW:
-    type_bitset |= VAL_STR;
     break;
   case YYJSON_TYPE_NULL:
     // Don't do anything with JSON 'null'
@@ -1112,7 +1094,7 @@ SEXP json_array_as_matrix(yyjson_val *arr, unsigned int sexp_type, parse_options
     mat_ = PROTECT(json_array_as_strsxp_matrix(arr, opt)); nprotect++;
     break;
   default:
-    Rf_error("Could not parse matrix of type: %i -> %s\n", sexp_type, Rf_type2char(sexp_type));
+    Rf_error("Could not parse matrix of type: %i -> %s\n", sexp_type, type2char(sexp_type));
   }
   
   if (!Rf_isNull(mat_)) {
@@ -1156,11 +1138,14 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
   
   size_t len = yyjson_get_len(arr);
   
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  // Empty []-array becomes an empty list
-  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (len == 0) {
-    res_ = PROTECT(Rf_allocVector(VECSXP, 0)); nprotect++;
+    if (opt->empty_array_set) {
+      return opt->empty_array;
+    } else {
+      res_ = PROTECT(Rf_allocVector(VECSXP, 0)); 
+      UNPROTECT(1);
+      return res_;
+    }
   }
   
   //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1306,7 +1291,7 @@ SEXP json_array_as_robj(yyjson_val *arr, parse_options *opt) {
           }
             break;
           default:
-            Rf_warning("Warning: Unhandled 3d matrix type: %i (%s)\n", sexp_type, Rf_type2char(sexp_type));
+            Rf_warning("Warning: Unhandled 3d matrix type: %i (%s)\n", sexp_type, type2char(sexp_type));
           }
           
           // Set dims on new 3d array.
@@ -1583,7 +1568,7 @@ SEXP json_array_of_objects_to_data_frame(yyjson_val *arr, parse_options *opt) {
     // dump_type_bitset(type_bitset[col]);
     // Rf_warning("[dfcol %i] %s - sexp_type: %i -> %s\n",
     //         col, colname[col],
-    //         sexp_type, Rf_type2char(sexp_type));
+    //         sexp_type, type2char(sexp_type));
     
     switch (sexp_type) {
     case LGLSXP:
@@ -1602,7 +1587,7 @@ SEXP json_array_of_objects_to_data_frame(yyjson_val *arr, parse_options *opt) {
       SET_VECTOR_ELT(df_, col, json_array_of_objects_to_vecsxp(arr, colname[col], opt));
       break;
     default:
-      Rf_warning("Unhandled 'df' coltype: %i -> %s\n", sexp_type, Rf_type2char(sexp_type));
+      Rf_warning("Unhandled 'df' coltype: %i -> %s\n", sexp_type, type2char(sexp_type));
       SET_VECTOR_ELT(df_, col, Rf_allocVector(LGLSXP, nrows));
     }
   }
@@ -1656,6 +1641,18 @@ SEXP json_object_as_list(yyjson_val *obj, parse_options *opt) {
           yyjson_get_type_desc(obj));
   }
   R_xlen_t n = (R_xlen_t)yyjson_get_len(obj);
+  
+  if (n == 0) {
+    if (opt->empty_object_set) {
+      return opt->empty_object;
+    } else {
+      SEXP res_ = PROTECT(Rf_allocVector(VECSXP, 0));
+      SEXP nms_ = PROTECT(Rf_allocVector(STRSXP, 0));
+      Rf_setAttrib(res_, R_NamesSymbol, nms_);
+      UNPROTECT(2);
+      return res_;
+    }
+  }
   
   SEXP res_ = PROTECT(Rf_allocVector(VECSXP, n)); nprotect++;
   SEXP nms_ = PROTECT(Rf_allocVector(STRSXP, n)); nprotect++;
@@ -1819,7 +1816,7 @@ SEXP json_as_robj(yyjson_val *val, parse_options *opt) {
     res_ = PROTECT(Rf_mkString(yyjson_get_str(val))); nprotect++;
     break;
   case YYJSON_TYPE_NULL:
-    res_ = PROTECT(Rf_duplicate(opt->single_null)); nprotect++;
+    res_ = R_NilValue;
     break;
   default:
     Rf_warning("json_as_robj(): unhandled: %s\n", yyjson_get_type_desc(val));
@@ -1874,9 +1871,9 @@ SEXP parse_json_from_str(const char *str, size_t len, parse_options *opt) {
   if (doc == NULL) {
     output_verbose_error(str, err);
 #if defined(_WIN32)
-    Rf_error("Error parsing JSON [Loc: %llu]: %s", err.pos, err.msg);
+    Rf_error("Error parsing JSON: %s code: %u at position: %llu\n", err.msg, err.code, err.pos);
 #else
-    Rf_error("Error parsing JSON [Loc: %lu]: %s", err.pos, err.msg);
+    Rf_error("Error parsing JSON: %s code: %u at position: %lu\n", err.msg, err.code, err.pos);
 #endif
   }
   
@@ -1911,9 +1908,9 @@ SEXP parse_json_from_file(const char *filename, parse_options *opt) {
   //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (doc == NULL) {
 #if defined(_WIN32)
-    Rf_error("Error parsing JSON file '%s' [Loc: %llu]: %s\n", filename, err.pos, err.msg);
+    Rf_error("Error parsing JSON file '%s': %s code: %u at position: %llu\n", filename, err.msg, err.code, err.pos);
 #else
-    Rf_error("Error parsing JSON file '%s' [Loc: %lu]: %s code", filename, err.pos, err.msg);
+    Rf_error("Error parsing JSON file '%s': %s code: %u at position: %lu\n", filename, err.msg, err.code, err.pos);
 #endif
     
   }
@@ -1963,7 +1960,7 @@ SEXP parse_from_raw_(SEXP raw_, SEXP parse_opts_) {
   // rather than running over into dead space after the raw string ends
   opt.yyjson_read_flag |= YYJSON_READ_STOP_WHEN_DONE;
   
-  return parse_json_from_str(str, (size_t)Rf_length(raw_), &opt);
+  return parse_json_from_str(str, (size_t)length(raw_), &opt);
 }
 
 
@@ -2060,9 +2057,9 @@ SEXP validate_json_file_(SEXP filename_, SEXP verbose_, SEXP parse_opts_) {
   if (doc == NULL) {
     if (Rf_asLogical(verbose_)) {
 #if defined(_WIN32)
-      Rf_warning("Error parsing JSON file '%s' [Loc: %llu]: %s", filename, err.pos, err.msg);
+      Rf_warning("Error parsing JSON file '%s': %s code: %u at position: %llu\n", filename, err.msg, err.code, err.pos);
 #else
-      Rf_warning("Error parsing JSON file '%s' [Loc: %lu]: %s", filename, err.pos, err.msg);
+      Rf_warning("Error parsing JSON file '%s': %s code: %u at position: %lu\n", filename, err.msg, err.code, err.pos);
 #endif
     }
     return Rf_ScalarLogical(0);
@@ -2092,9 +2089,9 @@ SEXP validate_json_str_(SEXP str_, SEXP verbose_, SEXP parse_opts_) {
     if (Rf_asLogical(verbose_)) {
       output_verbose_error(str, err);
 #if defined(_WIN32)
-      Rf_warning("Error parsing JSON [Loc: %llu]: %s", err.pos, err.msg);
+      Rf_warning("Error parsing JSON: %s code: %u at position: %llu\n", err.msg, err.code, err.pos);
 #else
-      Rf_warning("Error parsing JSON [Loc: %lu]: %s", err.pos, err.msg);
+      Rf_warning("Error parsing JSON: %s code: %u at position: %lu\n", err.msg, err.code, err.pos);
 #endif
     }
     return Rf_ScalarLogical(0);
@@ -2103,5 +2100,3 @@ SEXP validate_json_str_(SEXP str_, SEXP verbose_, SEXP parse_opts_) {
   yyjson_doc_free(doc);
   return Rf_ScalarLogical(1);
 }
-
-
